@@ -16,6 +16,8 @@ Replace this placeholder with a concise description of what this project does, w
 - changes
 - Update README.md
 - Update README.md
+- New feature: feat: initialize Flutter project with SQFlite integration and local project memory [lib/main.dart]
+- Documented Material 3 architecture and attached screenshots screen1.jpg, screen2.jpg, and screen3.jpg [README.md]
 
 ## Key files
 - `.gitignore`
