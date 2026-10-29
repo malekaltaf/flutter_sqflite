@@ -1,12 +1,23 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:taskmanager/sql_helper.dart';
 import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
+import 'package:taskmanager/sql_helper.dart';
+
+void initDatabaseFactory() {
+  if (kIsWeb) {
+    databaseFactory = databaseFactoryFfiWeb;
+  } else if (defaultTargetPlatform == TargetPlatform.windows ||
+      defaultTargetPlatform == TargetPlatform.linux ||
+      defaultTargetPlatform == TargetPlatform.macOS) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
+}
 
 void main() {
-  sqfliteFfiInit();
-  // Change default factory on the web
-  databaseFactory = databaseFactoryFfiWeb;
+  WidgetsFlutterBinding.ensureInitialized();
+  initDatabaseFactory();
   runApp(const MyApp());
 }
 
@@ -15,205 +26,433 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final seedColor = const Color(0xFF1976D2);
+
     return MaterialApp(
       title: 'User Management',
+      debugShowCheckedModeBanner: false,
+      themeMode: ThemeMode.system,
       theme: ThemeData(
-        colorScheme:
-            ColorScheme.fromSeed(seedColor: Color.fromARGB(255, 18, 141, 212)),
         useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: seedColor,
+          brightness: Brightness.light,
+        ),
+        appBarTheme: const AppBarTheme(
+          centerTitle: true,
+          elevation: 0,
+        ),
+        cardTheme: CardThemeData(
+          elevation: 1,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          filled: true,
+        ),
       ),
-      //home: const MyHomePage(title: 'User Management'),
-      home: HomePage(),
+      darkTheme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: seedColor,
+          brightness: Brightness.dark,
+        ),
+        appBarTheme: const AppBarTheme(
+          centerTitle: true,
+          elevation: 0,
+        ),
+        cardTheme: CardThemeData(
+          elevation: 1,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          filled: true,
+        ),
+      ),
+      home: const HomePage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  final String title;
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class HomePage extends StatefulWidget {
-  HomePage({Key? key}) : super(key: key);
-  _HomePageState createState() => _HomePageState();
+  State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
-  List<Map<String, dynamic>> _journals = [];
-
+  List<UserItem> _items = [];
   bool _isLoading = true;
+  bool _isSearching = false;
 
-  void _refreshJournals() async {
-    final data = await SQLHelper.getItems();
+  final TextEditingController _searchController = TextEditingController();
+  final TextEditingController _titleController = TextEditingController();
+  final TextEditingController _descriptionController = TextEditingController();
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshItems();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _titleController.dispose();
+    _descriptionController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refreshItems() async {
+    setState(() => _isLoading = true);
+    final data = await SQLHelper.getItems(search: _searchController.text);
+    if (!mounted) return;
     setState(() {
-      _journals = data;
+      _items = data;
       _isLoading = false;
     });
   }
 
-  void initState() {
-    super.initState();
-    _refreshJournals();
-    print('..number of item ${_journals.length}');
+  Future<void> _saveItem(int? id) async {
+    if (!_formKey.currentState!.validate()) return;
+
+    final title = _titleController.text.trim();
+    final description = _descriptionController.text.trim();
+
+    if (id == null) {
+      await SQLHelper.createItem(
+        UserItem(title: title, description: description),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('User added successfully!'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else {
+      await SQLHelper.updateItem(
+        UserItem(id: id, title: title, description: description),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('User updated successfully!'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+
+    _titleController.clear();
+    _descriptionController.clear();
+    Navigator.of(context).pop();
+    _refreshItems();
   }
 
-  final TextEditingController _titleController = TextEditingController();
-  final TextEditingController _descriptionController = TextEditingController();
+  Future<void> _confirmDelete(UserItem item) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete User'),
+        content: Text('Are you sure you want to delete "${item.title}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.tonal(
+            style: FilledButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.error,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
 
-  Future<void> _addItem() async {
-    await SQLHelper.createItem(
-        _titleController.text, _descriptionController.text);
-    _refreshJournals();
-    print('..number of item ${_journals.length}');
+    if (confirmed == true && item.id != null) {
+      await SQLHelper.deleteItem(item.id!);
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Deleted "${item.title}"'),
+          behavior: SnackBarBehavior.floating,
+          action: SnackBarAction(
+            label: 'Undo',
+            onPressed: () async {
+              await SQLHelper.createItem(item);
+              _refreshItems();
+            },
+          ),
+        ),
+      );
+      _refreshItems();
+    }
   }
 
-  Future<void> _updateItem(int id) async {
-    await SQLHelper.updateItem(
-        id, _titleController.text, _descriptionController.text);
-    _refreshJournals();
-  }
-
-  void _deleteItem(int id) async {
-    await SQLHelper.deleteItem(id);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('Successfully deleted a UserData!'),
-    ));
-    _refreshJournals();
-  }
-
-  void _showForm(int? id) async {
-    if (id != null) {
-      final exisitingJournal =
-          _journals.firstWhere((element) => element['id'] == id);
-      _titleController.text = exisitingJournal['title'];
-      _descriptionController.text = exisitingJournal['description'];
+  void _showForm(UserItem? item) {
+    if (item != null) {
+      _titleController.text = item.title;
+      _descriptionController.text = item.description;
+    } else {
+      _titleController.clear();
+      _descriptionController.clear();
     }
 
     showModalBottomSheet(
-        context: context,
-        elevation: 5,
-        isScrollControlled: true,
-        builder: (_) => Container(
-            padding: EdgeInsets.only(
-              top: 15,
-              left: 15,
-              right: 15,
-              bottom: MediaQuery.of(context).viewInsets.bottom + 120,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                TextField(
-                  controller: _titleController,
-                  decoration: InputDecoration(hintText: 'Name:'),
-                ),
-                SizedBox(
-                  height: 10,
-                ),
-                TextField(
-                  controller: _descriptionController,
-                  decoration: InputDecoration(hintText: 'Email:'),
-                ),
-                SizedBox(
-                  height: 20,
-                ),
-                ElevatedButton(
-                  onPressed: () async {
-                    if (id == null) {
-                      await _addItem();
-                    }
-                    if (id != null) {
-                      await _updateItem(id);
-                    }
-
-                    _titleController.text = "";
-                    _descriptionController.text = "";
-
-                    Navigator.of(context).pop();
-                  },
-                  child: Text(id == null ? 'Create New' : 'Update'),
-                )
-              ],
-            )));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: Text('User Management'),
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      useSafeArea: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      body: ListView.builder(
-        itemCount: _journals.length,
-        itemBuilder: (context, index) => Card(
-          color: Colors.orange[200],
-          margin: EdgeInsets.all(15),
-          child: ListTile(
-            title: Text(_journals[index]['title']),
-            subtitle: Text(_journals[index]['description']),
-            trailing: SizedBox(
-              width: 100,
-              child: Row(
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(
+          left: 20,
+          right: 20,
+          top: 10,
+          bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+        ),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                item == null ? 'Add New User' : 'Edit User',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _titleController,
+                decoration: const InputDecoration(
+                  labelText: 'Name',
+                  prefixIcon: Icon(Icons.person_outline),
+                ),
+                textInputAction: TextInputAction.next,
+                validator: (val) {
+                  if (val == null || val.trim().isEmpty) {
+                    return 'Please enter a name';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _descriptionController,
+                decoration: const InputDecoration(
+                  labelText: 'Email / Description',
+                  prefixIcon: Icon(Icons.email_outlined),
+                ),
+                textInputAction: TextInputAction.done,
+                validator: (val) {
+                  if (val == null || val.trim().isEmpty) {
+                    return 'Please enter details';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 20),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  IconButton(
-                    icon: Icon(Icons.edit),
-                    onPressed: () => _showForm(_journals[index]['id']),
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: const Text('Cancel'),
                   ),
-                  IconButton(
-                      icon: Icon(Icons.delete),
-                      onPressed: () => _deleteItem(_journals[index]['id'])),
+                  const SizedBox(width: 12),
+                  FilledButton.icon(
+                    icon: Icon(item == null ? Icons.add : Icons.check),
+                    label: Text(item == null ? 'Create' : 'Save'),
+                    onPressed: () => _saveItem(item?.id),
+                  ),
                 ],
               ),
-            ),
+            ],
           ),
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-          child: Icon(Icons.add), onPressed: () => _showForm(null)),
     );
   }
-}
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+  PreferredSizeWidget _buildAppBar() {
+    if (_isSearching) {
+      return AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            setState(() {
+              _isSearching = false;
+              _searchController.clear();
+            });
+            _refreshItems();
+          },
+        ),
+        title: TextField(
+          controller: _searchController,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Search by name or email...',
+            border: InputBorder.none,
+            filled: false,
+          ),
+          onChanged: (_) => _refreshItems(),
+        ),
+        actions: [
+          if (_searchController.text.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.clear),
+              onPressed: () {
+                _searchController.clear();
+                _refreshItems();
+              },
+            ),
+        ],
+      );
+    }
 
-  void _incrementCounter() {
-    setState(() {
-      _counter++;
-    });
+    return AppBar(
+      title: const Text('User Management'),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.search),
+          tooltip: 'Search',
+          onPressed: () {
+            setState(() => _isSearching = true);
+          },
+        ),
+        IconButton(
+          icon: const Icon(Icons.refresh),
+          tooltip: 'Refresh',
+          onPressed: _refreshItems,
+        ),
+      ],
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: Text(widget.title),
-      ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text(
-              'You have pushed the button this many times:',
-            ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
+      appBar: _buildAppBar(),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _items.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.people_outline,
+                        size: 72,
+                        color: theme.colorScheme.outline,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        _isSearching ? 'No matching users found' : 'No users yet',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _isSearching
+                            ? 'Try a different search term'
+                            : 'Tap + to add your first user',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: theme.colorScheme.outline,
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  itemCount: _items.length,
+                  itemBuilder: (context, index) {
+                    final item = _items[index];
+                    final initial = item.title.isNotEmpty
+                        ? item.title[0].toUpperCase()
+                        : '?';
+
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                        leading: CircleAvatar(
+                          backgroundColor:
+                              theme.colorScheme.primaryContainer,
+                          foregroundColor:
+                              theme.colorScheme.onPrimaryContainer,
+                          child: Text(
+                            initial,
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        title: Text(
+                          item.title,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        subtitle: Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            item.description,
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.edit_outlined),
+                              tooltip: 'Edit',
+                              onPressed: () => _showForm(item),
+                            ),
+                            IconButton(
+                              icon: Icon(
+                                Icons.delete_outline,
+                                color: theme.colorScheme.error,
+                              ),
+                              tooltip: 'Delete',
+                              onPressed: () => _confirmDelete(item),
+                            ),
+                          ],
+                        ),
+                        onTap: () => _showForm(item),
+                      ),
+                    );
+                  },
+                ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _showForm(null),
+        icon: const Icon(Icons.add),
+        label: const Text('Add User'),
       ),
     );
   }
